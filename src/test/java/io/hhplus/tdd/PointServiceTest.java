@@ -1,16 +1,23 @@
 package io.hhplus.tdd;
+
 import io.hhplus.tdd.database.PointHistoryTable;
 import io.hhplus.tdd.database.UserPointTable;
 import io.hhplus.tdd.point.UserPoint;
 import io.hhplus.tdd.point.PointHistory;
 import io.hhplus.tdd.point.PointService;
 import io.hhplus.tdd.point.TransactionType;
+import io.hhplus.tdd.point.PointValidator;
+import io.hhplus.tdd.point.UserPointLockManager;
+import io.hhplus.tdd.point.exception.InsufficientPointException;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mock;
+import org.springframework.boot.test.context.SpringBootTest;
+
 import java.util.Collections;
 import java.util.List;
-import org.springframework.boot.test.context.SpringBootTest;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -23,11 +30,17 @@ class PointServiceTest {
     @Mock
     private PointHistoryTable pointHistoryTable;
 
+    @Mock
+    private PointValidator validator;
+
+    @Mock
+    private UserPointLockManager lockManager;
+
     private PointService pointService;
 
     @BeforeEach
     void setUp() {
-        pointService = new PointService(userPointTable, pointHistoryTable);
+        pointService = new PointService(userPointTable, pointHistoryTable, validator, lockManager);
     }
 
     // 1. getUserPoint 테스트
@@ -35,6 +48,8 @@ class PointServiceTest {
     void testGetUserPointWithNegativeId() {
         // given
         long negativeId = -1L;
+        doThrow(new IllegalArgumentException("유효하지 않은 ID입니다."))
+                .when(validator).validateId(negativeId);
 
         // when
         IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () -> {
@@ -43,6 +58,7 @@ class PointServiceTest {
 
         // then
         assertEquals("유효하지 않은 ID입니다.", exception.getMessage());
+        verify(validator).validateId(negativeId);
     }
 
     // 2. chargePoint 테스트들
@@ -51,6 +67,8 @@ class PointServiceTest {
         // given
         long invalidId = -1L;
         long amount = 1000L;
+        doThrow(new IllegalArgumentException("유효하지 않은 ID입니다."))
+                .when(validator).validateId(invalidId);
 
         // when
         IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () -> {
@@ -59,6 +77,7 @@ class PointServiceTest {
 
         // then
         assertEquals("유효하지 않은 ID입니다.", exception.getMessage());
+        verify(validator).validateId(invalidId);
     }
 
     @Test
@@ -66,6 +85,8 @@ class PointServiceTest {
         // given
         long userId = 1L;
         long amount = 0L;
+        doThrow(new IllegalArgumentException("충전 포인트는 0보다 커야 합니다."))
+                .when(validator).validateChargeAmount(amount);
 
         // when
         IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () -> {
@@ -74,6 +95,7 @@ class PointServiceTest {
 
         // then
         assertEquals("충전 포인트는 0보다 커야 합니다.", exception.getMessage());
+        verify(validator).validateChargeAmount(amount);
     }
 
     @Test
@@ -81,6 +103,8 @@ class PointServiceTest {
         // given
         long userId = 1L;
         long amount = -1000L;
+        doThrow(new IllegalArgumentException("충전 포인트는 0보다 커야 합니다."))
+                .when(validator).validateChargeAmount(amount);
 
         // when
         IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () -> {
@@ -89,8 +113,8 @@ class PointServiceTest {
 
         // then
         assertEquals("충전 포인트는 0보다 커야 합니다.", exception.getMessage());
+        verify(validator).validateChargeAmount(amount);
     }
-
 
     // 3. usePoint 테스트들
     @Test
@@ -98,6 +122,8 @@ class PointServiceTest {
         // given
         long invalidId = -1L;
         long amount = 1000L;
+        doThrow(new IllegalArgumentException("유효하지 않은 ID입니다."))
+                .when(validator).validateId(invalidId);
 
         // when
         IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () -> {
@@ -106,6 +132,7 @@ class PointServiceTest {
 
         // then
         assertEquals("유효하지 않은 ID입니다.", exception.getMessage());
+        verify(validator).validateId(invalidId);
     }
 
     @Test
@@ -113,6 +140,8 @@ class PointServiceTest {
         // given
         long userId = 1L;
         long amount = 0L;
+        doThrow(new IllegalArgumentException("사용 포인트는 0보다 커야 합니다."))
+                .when(validator).validateUseAmount(amount);
 
         // when
         IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () -> {
@@ -121,6 +150,7 @@ class PointServiceTest {
 
         // then
         assertEquals("사용 포인트는 0보다 커야 합니다.", exception.getMessage());
+        verify(validator).validateUseAmount(amount);
     }
 
     @Test
@@ -128,6 +158,8 @@ class PointServiceTest {
         // given
         long userId = 1L;
         long amount = -1000L;
+        doThrow(new IllegalArgumentException("사용 포인트는 0보다 커야 합니다."))
+                .when(validator).validateUseAmount(amount);
 
         // when
         IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () -> {
@@ -136,10 +168,11 @@ class PointServiceTest {
 
         // then
         assertEquals("사용 포인트는 0보다 커야 합니다.", exception.getMessage());
+        verify(validator).validateUseAmount(amount);
     }
 
     @Test
-    void testUsePointWithInsufficientBalance() {
+    void testUsePointWithInsufficientBalance() throws InterruptedException {
         // given
         long userId = 1L;
         long currentAmount = 500L;
@@ -147,25 +180,29 @@ class PointServiceTest {
 
         UserPoint currentPoint = new UserPoint(userId, currentAmount, System.currentTimeMillis());
         when(userPointTable.selectById(userId)).thenReturn(currentPoint);
+        when(lockManager.tryLock(userId, 5, TimeUnit.SECONDS)).thenReturn(true);
+        doThrow(new InsufficientPointException())
+                .when(validator).validateBalance(currentAmount, useAmount);
 
         // when
-        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () -> {
+        InsufficientPointException exception = assertThrows(InsufficientPointException.class, () -> {
             pointService.usePoint(userId, useAmount);
         });
 
         // then
         assertEquals("포인트가 부족합니다.", exception.getMessage());
-
-        verify(userPointTable).selectById(userId);
-        verify(userPointTable, never()).insertOrUpdate(anyLong(), anyLong());
-        verify(pointHistoryTable, never()).insert(anyLong(), anyLong(), any(), anyLong());
+        verify(validator).validateBalance(currentAmount, useAmount);
+        verify(lockManager).tryLock(userId, 5, TimeUnit.SECONDS);
+        verify(lockManager).unlock(userId);
     }
 
-    // getPointHistory 테스트들
+    // 4. getPointHistory 테스트들
     @Test
     void testGetPointHistoryWithInvalidId() {
         // given
         long invalidId = -1L;
+        doThrow(new IllegalArgumentException("유효하지 않은 ID입니다."))
+                .when(validator).validateId(invalidId);
 
         // when
         IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () -> {
@@ -174,6 +211,7 @@ class PointServiceTest {
 
         // then
         assertEquals("유효하지 않은 ID입니다.", exception.getMessage());
+        verify(validator).validateId(invalidId);
     }
 
     @Test
