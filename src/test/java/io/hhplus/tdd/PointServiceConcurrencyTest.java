@@ -1,30 +1,26 @@
 package io.hhplus.tdd;
 
-// Spring 관련
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.beans.factory.annotation.Autowired;
 
-// JUnit 관련
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-// 동시성 관련
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
-// 컬렉션 관련
 import java.util.List;
 import java.util.ArrayList;
 import java.util.Collections;
 
-// 프로젝트 클래스
 import io.hhplus.tdd.point.PointService;
 import io.hhplus.tdd.point.UserPoint;
 import io.hhplus.tdd.point.PointHistory;
 import org.springframework.test.annotation.DirtiesContext;
+import io.hhplus.tdd.point.UserPointLockManager;
 
 @SpringBootTest
 @DirtiesContext(classMode = DirtiesContext.ClassMode.BEFORE_EACH_TEST_METHOD)
@@ -32,6 +28,9 @@ class PointServiceConcurrencyTest {
 
     @Autowired
     private PointService pointService;
+
+    @Autowired
+    private UserPointLockManager lockManager;
 
     @Test
     void testConcurrentChargePoint() throws InterruptedException {
@@ -49,10 +48,18 @@ class PointServiceConcurrencyTest {
             executorService.submit(() -> {
                 try {
                     UserPoint result = pointService.chargePoint(userId, chargeAmount);
-                    System.out.println("충전 완료: " + result.point()); // 로그 추가
+                    System.out.println(String.format(
+                            "[Thread-%d] 충전 완료: %d원",
+                            Thread.currentThread().getId(),
+                            result.point()
+                    ));
                 } catch (Exception e) {
                     exceptions.add(e);
-                    System.err.println("충전 실패: " + e.getMessage());
+                    System.err.println(String.format(
+                            "[Thread-%d] 충전 실패: %s",
+                            Thread.currentThread().getId(),
+                            e.getMessage()
+                    ));
                 } finally {
                     latch.countDown();
                 }
@@ -66,6 +73,10 @@ class PointServiceConcurrencyTest {
         // then
         UserPoint finalPoint = pointService.getUserPoint(userId);
         List<PointHistory> histories = pointService.getPointHistory(userId);
+
+        System.out.println("\n=== 테스트 결과 ===");
+        System.out.println("최종 포인트: " + finalPoint.point());
+        System.out.println("이력 개수: " + histories.size());
 
         // 검증
         assertTrue(exceptions.isEmpty(), "모든 요청이 성공해야 함");
@@ -92,9 +103,19 @@ class PointServiceConcurrencyTest {
         for (int i = 0; i < threadCount; i++) {
             executorService.submit(() -> {
                 try {
-                    pointService.usePoint(userId, useAmount);
+                    UserPoint result = pointService.usePoint(userId, useAmount);
+                    System.out.println(String.format(
+                            "[Thread-%d] 사용 완료: %d원",
+                            Thread.currentThread().getId(),
+                            result.point()
+                    ));
                 } catch (Exception e) {
                     exceptions.add(e);
+                    System.err.println(String.format(
+                            "[Thread-%d] 사용 실패: %s",
+                            Thread.currentThread().getId(),
+                            e.getMessage()
+                    ));
                 } finally {
                     latch.countDown();
                 }
@@ -108,6 +129,11 @@ class PointServiceConcurrencyTest {
         // then
         UserPoint finalPoint = pointService.getUserPoint(userId);
         List<PointHistory> histories = pointService.getPointHistory(userId);
+
+        System.out.println("\n=== 테스트 결과 ===");
+        System.out.println("초기 포인트: " + initialAmount);
+        System.out.println("최종 포인트: " + finalPoint.point());
+        System.out.println("이력 개수: " + histories.size());
 
         // 검증
         assertTrue(exceptions.isEmpty(), "모든 요청이 성공해야 함");
@@ -123,7 +149,8 @@ class PointServiceConcurrencyTest {
         long amount = 100L;
 
         // 초기 포인트 설정
-        pointService.chargePoint(userId, amount * 10);  // 초기값 1000원
+        UserPoint initialPoint = pointService.chargePoint(userId, amount * 10);
+        System.out.println(String.format("[시작] 초기 포인트: %d원", initialPoint.point()));
 
         ExecutorService executorService = Executors.newFixedThreadPool(threadCount);
         CountDownLatch latch = new CountDownLatch(threadCount);
@@ -134,14 +161,43 @@ class PointServiceConcurrencyTest {
             final int index = i;
             executorService.submit(() -> {
                 try {
+                    String threadInfo = String.format(
+                            "[Thread-%d] 작업-%d: ",
+                            Thread.currentThread().getId(),
+                            index
+                    );
+
                     switch (index % 3) {
-                        case 0 -> pointService.chargePoint(userId, amount);  // 충전
-                        case 1 -> pointService.usePoint(userId, amount);     // 사용
-                        case 2 -> pointService.getUserPoint(userId);         // 조회
+                        case 0 -> {
+                            UserPoint result = pointService.chargePoint(userId, amount);
+                            System.out.println(threadInfo + String.format(
+                                    "충전 완료 (현재: %d원)",
+                                    result.point()
+                            ));
+                        }
+                        case 1 -> {
+                            UserPoint result = pointService.usePoint(userId, amount);
+                            System.out.println(threadInfo + String.format(
+                                    "사용 완료 (현재: %d원)",
+                                    result.point()
+                            ));
+                        }
+                        case 2 -> {
+                            UserPoint result = pointService.getUserPoint(userId);
+                            System.out.println(threadInfo + String.format(
+                                    "조회 완료 (현재: %d원)",
+                                    result.point()
+                            ));
+                        }
                     }
                 } catch (Exception e) {
                     exceptions.add(e);
-                    System.err.println("Operation failed: " + e.getMessage());
+                    System.err.println(String.format(
+                            "[Thread-%d] 작업-%d 실패: %s",
+                            Thread.currentThread().getId(),
+                            index,
+                            e.getMessage()
+                    ));
                 } finally {
                     latch.countDown();
                 }
@@ -149,21 +205,21 @@ class PointServiceConcurrencyTest {
         }
 
         // 모든 스레드 완료 대기
-        latch.await(15, TimeUnit.SECONDS);  // 시간 증가
+        latch.await(15, TimeUnit.SECONDS);
         executorService.shutdown();
 
         // then
         UserPoint finalPoint = pointService.getUserPoint(userId);
         List<PointHistory> histories = pointService.getPointHistory(userId);
 
+        System.out.println("\n=== 테스트 결과 ===");
+        System.out.println("초기 포인트: " + initialPoint.point());
+        System.out.println("최종 포인트: " + finalPoint.point());
+        System.out.println("이력 개수: " + histories.size());
+
         // 검증
         assertTrue(exceptions.isEmpty(), "모든 요청이 성공해야 함");
-
-        // 충전 5번, 사용 5번이므로 초기값 + (충전 - 사용) * amount
-        long expectedBalance = amount * 10 + (amount * 5 - amount * 5);
-        assertEquals(expectedBalance, finalPoint.point(), "최종 포인트 확인");
-
-        // 이력은 초기 충전 1회 + 충전 5회 + 사용 5회 = 11회
+        assertEquals(amount * 10 + (amount * 5 - amount * 5), finalPoint.point(), "최종 포인트 확인");
         assertEquals(11, histories.size(), "이력 개수 확인");
     }
 }
